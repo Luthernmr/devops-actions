@@ -20,6 +20,7 @@ inputs:
   source_directory:
     description: "Directory containing the Lambda function source code (will be zipped)"
     required: false
+    default: "./src"
   runtime:
     description: "Lambda runtime (e.g., python3.9, nodejs18.x)"
     required: false
