@@ -47,6 +47,31 @@ on:
         description: "Function memory size in MB"
         required: false
         type: number
+      requirements_file:
+        description: "Path to requirements.txt file (relative to source directory or current directory)"
+        required: false
+        type: string
+        default: "requirements.txt"
+      python_version:
+        description: "Python version for pip install (e.g., 3.9, 3.10, 3.11)"
+        required: false
+        type: string
+        default: "3.9"
+      install_dependencies:
+        description: "Whether to install Python dependencies from requirements.txt"
+        required: false
+        type: boolean
+        default: true
+      deployment_timeout:
+        description: "Maximum time in seconds to wait for deployment (default: 300)"
+        required: false
+        type: number
+        default: 300
+      package_timeout:
+        description: "Maximum time in seconds to wait for package preparation (default: 180)"
+        required: false
+        type: number
+        default: 180
       environment:
         description: "Environment to deploy to (dev, staging, prod)"
         required: false
@@ -86,6 +111,11 @@ jobs:
           oidc_role_arn: ${{ secrets.oidc_role_arn }}
           timeout: ${{ inputs.timeout }}
           memory_size: ${{ inputs.memory_size }}
+          requirements_file: ${{ inputs.requirements_file }}
+          python_version: ${{ inputs.python_version }}
+          install_dependencies: ${{ inputs.install_dependencies }}
+          deployment_timeout: ${{ inputs.deployment_timeout }}
+          package_timeout: ${{ inputs.package_timeout }}
 
       - name: Deployment summary
         run: |
