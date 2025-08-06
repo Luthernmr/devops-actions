@@ -28,7 +28,8 @@ inputs:
     required: false
   aws_region:
     description: "AWS region where the Lambda function is located"
-    required: true
+    required: false
+    default: "eu-west-3"
   oidc_role_arn:
     description: "ARN of the AWS IAM role to assume for Lambda deployment"
     required: true
