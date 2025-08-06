@@ -13,10 +13,10 @@ inputs:
     required: false
   s3_bucket:
     description: "S3 bucket containing the Lambda function code"
-    required: true
+    required: false
   s3_key:
     description: "S3 key of the Lambda function code"
-    required: true
+    required: false
   source_directory:
     description: "Directory containing the Lambda function source code (will be zipped)"
     required: false
