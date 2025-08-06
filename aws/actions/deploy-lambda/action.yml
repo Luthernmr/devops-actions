@@ -28,9 +28,6 @@ inputs:
     description: "Lambda function handler"
     required: false
     default: "main.handler"
-  environment_variables:
-    description: "Environment variables as JSON string"
-    required: false
   aws_region:
     description: "AWS region where the Lambda function is located"
     required: false
@@ -119,8 +116,7 @@ runs:
           "${{ inputs.runtime }}" \
           "${{ inputs.handler }}" \
           "${{ inputs.timeout }}" \
-          "${{ inputs.memory_size }}" \
-          "${{ inputs.environment_variables }}"
+          "${{ inputs.memory_size }}"
       shell: bash
 
     - name: Cleanup temporary files

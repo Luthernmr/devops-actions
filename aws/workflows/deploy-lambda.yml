@@ -31,10 +31,6 @@ on:
         description: "Lambda function handler"
         required: false
         type: string
-      environment_variables:
-        description: "Environment variables as JSON string"
-        required: false
-        type: string
       aws_region:
         description: "AWS region where the Lambda function is located"
         required: true
@@ -106,7 +102,6 @@ jobs:
           source_directory: ${{ inputs.source_directory }}
           runtime: ${{ inputs.runtime }}
           handler: ${{ inputs.handler }}
-          environment_variables: ${{ inputs.environment_variables }}
           aws_region: ${{ inputs.aws_region }}
           oidc_role_arn: ${{ secrets.oidc_role_arn }}
           timeout: ${{ inputs.timeout }}

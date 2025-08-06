@@ -11,7 +11,7 @@ RUNTIME="$2"
 HANDLER="$3"
 TIMEOUT="$4"
 MEMORY_SIZE="$5"
-ENVIRONMENT_VARIABLES="$6"
+# ENVIRONMENT_VARIABLES="$6" - Managed by Terraform, not needed
 
 echo "⚙️  Updating Lambda function configuration..."
 
@@ -35,11 +35,6 @@ fi
 if [[ -n "$MEMORY_SIZE" ]]; then
   UPDATE_ARGS="$UPDATE_ARGS --memory-size $MEMORY_SIZE"
   echo "Memory: $MEMORY_SIZE MB"
-fi
-
-if [[ -n "$ENVIRONMENT_VARIABLES" ]]; then
-  UPDATE_ARGS="$UPDATE_ARGS --environment Variables='$ENVIRONMENT_VARIABLES'"
-  echo "Environment variables updated"
 fi
 
 if [[ -n "$UPDATE_ARGS" ]]; then
