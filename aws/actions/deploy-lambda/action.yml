@@ -27,6 +27,7 @@ inputs:
   handler:
     description: "Lambda function handler"
     required: false
+    default: "main.handler"
   environment_variables:
     description: "Environment variables as JSON string"
     required: false
@@ -40,6 +41,7 @@ inputs:
   memory_size:
     description: "Function memory size in MB"
     required: false
+    default: "128"
   requirements_file:
     description: "Path to requirements.txt file (relative to source directory or current directory)"
     required: false
