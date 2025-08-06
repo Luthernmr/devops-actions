@@ -1,0 +1,173 @@
+name: Deploy to AWS ECS Blue-Green
+
+on:
+  workflow_call:
+    inputs:
+      cluster_name:
+        description: "Name of the ECS cluster"
+        required: true
+        type: string
+      service_name:
+        description: "Name of the ECS service"
+        required: true
+        type: string
+      task_definition:
+        description: "Path to the ECS task definition file or task definition family name"
+        required: true
+        type: string
+      image_uri:
+        description: "URI of the Docker image to deploy"
+        required: true
+        type: string
+      container_name:
+        description: "Name of the container in the task definition to update"
+        required: true
+        type: string
+      aws_region:
+        description: "AWS region where the ECS resources are located"
+        required: true
+        type: string
+      codedeploy_application_name:
+        description: "Name of the CodeDeploy application"
+        required: true
+        type: string
+      codedeploy_deployment_group:
+        description: "Name of the CodeDeploy deployment group"
+        required: true
+        type: string
+      codedeploy_config_name:
+        description: "CodeDeploy configuration name for blue-green deployment"
+        required: false
+        type: string
+        default: "CodeDeployDefault.ECSAllAtOnceBlueGreen"
+      wait_for_deployment:
+        description: "Whether to wait for the deployment to complete"
+        required: false
+        type: boolean
+        default: true
+      deployment_timeout:
+        description: "Timeout for deployment in minutes"
+        required: false
+        type: number
+        default: 30
+      auto_rollback_enabled:
+        description: "Enable automatic rollback on deployment failure"
+        required: false
+        type: boolean
+        default: true
+      termination_wait_time:
+        description: "Wait time before terminating original task set (in minutes)"
+        required: false
+        type: number
+        default: 5
+      environment:
+        description: "Environment to deploy to (dev, staging, prod)"
+        required: false
+        type: string
+        default: "dev"
+      pre_deployment_checks:
+        description: "Run pre-deployment health checks"
+        required: false
+        type: boolean
+        default: true
+    secrets:
+      oidc_role_arn:
+        description: "ARN of the AWS IAM role to assume for ECS deployment"
+        required: true
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  pre-deployment:
+    name: Pre-deployment Checks
+    runs-on: ubuntu-latest
+    if: ${{ inputs.pre_deployment_checks }}
+    outputs:
+      health-check: ${{ steps.health.outputs.status }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v3
+        with:
+          role-to-assume: ${{ secrets.oidc_role_arn }}
+          aws-region: ${{ inputs.aws_region }}
+
+      - name: Check service health
+        id: health
+        run: |
+          echo "Checking ECS service health..."
+          SERVICE_STATUS=$(aws ecs describe-services \
+            --cluster ${{ inputs.cluster_name }} \
+            --services ${{ inputs.service_name }} \
+            --query 'services[0].status' \
+            --output text)
+            
+          RUNNING_COUNT=$(aws ecs describe-services \
+            --cluster ${{ inputs.cluster_name }} \
+            --services ${{ inputs.service_name }} \
+            --query 'services[0].runningCount' \
+            --output text)
+            
+          DESIRED_COUNT=$(aws ecs describe-services \
+            --cluster ${{ inputs.cluster_name }} \
+            --services ${{ inputs.service_name }} \
+            --query 'services[0].desiredCount' \
+            --output text)
+            
+          echo "Service status: ${SERVICE_STATUS}"
+          echo "Running tasks: ${RUNNING_COUNT}/${DESIRED_COUNT}"
+
+          if [[ "${SERVICE_STATUS}" == "ACTIVE" && "${RUNNING_COUNT}" -eq "${DESIRED_COUNT}" ]]; then
+            echo "✅ Service is healthy and ready for deployment"
+            echo "status=healthy" >> $GITHUB_OUTPUT
+          else
+            echo "❌ Service is not in a healthy state for deployment"
+            echo "status=unhealthy" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+
+  deploy:
+    name: Blue-Green Deploy to ECS
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    needs: [pre-deployment]
+    if: ${{ always() && (needs.pre-deployment.result == 'success' || needs.pre-deployment.result == 'skipped') }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Deploy with Blue-Green strategy
+        uses: ./aws/actions/deploy-ecs-blue-green
+        with:
+          cluster_name: ${{ inputs.cluster_name }}
+          service_name: ${{ inputs.service_name }}
+          task_definition: ${{ inputs.task_definition }}
+          image_uri: ${{ inputs.image_uri }}
+          container_name: ${{ inputs.container_name }}
+          aws_region: ${{ inputs.aws_region }}
+          oidc_role_arn: ${{ secrets.oidc_role_arn }}
+          codedeploy_application_name: ${{ inputs.codedeploy_application_name }}
+          codedeploy_deployment_group: ${{ inputs.codedeploy_deployment_group }}
+          codedeploy_config_name: ${{ inputs.codedeploy_config_name }}
+          wait_for_deployment: ${{ inputs.wait_for_deployment }}
+          deployment_timeout: ${{ inputs.deployment_timeout }}
+          auto_rollback_enabled: ${{ inputs.auto_rollback_enabled }}
+          termination_wait_time: ${{ inputs.termination_wait_time }}
+
+      - name: Post-deployment verification
+        run: |
+          echo "## 🚀 Blue-Green Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "- **Cluster**: ${{ inputs.cluster_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Service**: ${{ inputs.service_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Image**: ${{ inputs.image_uri }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Region**: ${{ inputs.aws_region }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Environment**: ${{ inputs.environment }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **CodeDeploy App**: ${{ inputs.codedeploy_application_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Deployment Group**: ${{ inputs.codedeploy_deployment_group }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Configuration**: ${{ inputs.codedeploy_config_name }}" >> $GITHUB_STEP_SUMMARY

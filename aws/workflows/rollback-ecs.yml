@@ -1,0 +1,178 @@
+name: Rollback AWS ECS Deployment
+
+on:
+  workflow_call:
+    inputs:
+      cluster_name:
+        description: "Name of the ECS cluster"
+        required: true
+        type: string
+      service_name:
+        description: "Name of the ECS service"
+        required: true
+        type: string
+      rollback_to_revision:
+        description: "Specific task definition revision to rollback to (e.g., 'my-app:123'). If not provided, rolls back to previous revision"
+        required: false
+        type: string
+      rollback_steps:
+        description: "Number of revisions to rollback (default: 1)"
+        required: false
+        type: number
+        default: 1
+      aws_region:
+        description: "AWS region where the ECS resources are located"
+        required: true
+        type: string
+      wait_for_stability:
+        description: "Whether to wait for the service to reach a stable state after rollback"
+        required: false
+        type: boolean
+        default: true
+      confirmation_required:
+        description: "Whether to require manual confirmation before rollback (for safety)"
+        required: false
+        type: boolean
+        default: false
+      reason:
+        description: "Reason for the rollback (for logging and audit purposes)"
+        required: false
+        type: string
+        default: "Manual rollback initiated"
+      environment:
+        description: "Environment being rolled back (dev, staging, prod)"
+        required: false
+        type: string
+        default: "dev"
+    secrets:
+      oidc_role_arn:
+        description: "ARN of the AWS IAM role to assume for ECS deployment"
+        required: true
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  pre-rollback:
+    name: Pre-rollback Validation
+    runs-on: ubuntu-latest
+    outputs:
+      can-rollback: ${{ steps.validate.outputs.can-rollback }}
+      current-revision: ${{ steps.validate.outputs.current-revision }}
+      target-revision: ${{ steps.validate.outputs.target-revision }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v3
+        with:
+          role-to-assume: ${{ secrets.oidc_role_arn }}
+          aws-region: ${{ inputs.aws_region }}
+
+      - name: Validate rollback feasibility
+        id: validate
+        run: |
+          echo "Validating rollback feasibility..."
+
+          # Get current service information
+          SERVICE_INFO=$(aws ecs describe-services \
+            --cluster ${{ inputs.cluster_name }} \
+            --services ${{ inputs.service_name }} \
+            --query 'services[0]')
+
+          CURRENT_TASK_DEF=$(echo $SERVICE_INFO | jq -r '.taskDefinition')
+          SERVICE_STATUS=$(echo $SERVICE_INFO | jq -r '.status')
+
+          echo "current-task-definition=${CURRENT_TASK_DEF}" >> $GITHUB_OUTPUT
+          echo "service-status=${SERVICE_STATUS}" >> $GITHUB_OUTPUT
+
+          # Check if service is in a rollback-able state
+          if [[ "${SERVICE_STATUS}" != "ACTIVE" ]]; then
+            echo "❌ Service is not in ACTIVE state. Current status: ${SERVICE_STATUS}"
+            echo "can-rollback=false" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+
+          # Get task definition family and current revision
+          FAMILY=$(aws ecs describe-task-definition \
+            --task-definition ${CURRENT_TASK_DEF} \
+            --query 'taskDefinition.family' \
+            --output text)
+
+          CURRENT_REVISION=$(aws ecs describe-task-definition \
+            --task-definition ${CURRENT_TASK_DEF} \
+            --query 'taskDefinition.revision' \
+            --output text)
+
+          echo "current-revision=${CURRENT_REVISION}" >> $GITHUB_OUTPUT
+
+          # Determine target revision
+          if [[ -n "${{ inputs.rollback_to_revision }}" ]]; then
+            TARGET_REVISION="${{ inputs.rollback_to_revision }}"
+          else
+            TARGET_REV_NUM=$((CURRENT_REVISION - ${{ inputs.rollback_steps }}))
+            if [[ ${TARGET_REV_NUM} -lt 1 ]]; then
+              echo "❌ Cannot rollback ${{ inputs.rollback_steps }} steps from revision ${CURRENT_REVISION}"
+              echo "can-rollback=false" >> $GITHUB_OUTPUT
+              exit 1
+            fi
+            TARGET_REVISION="${FAMILY}:${TARGET_REV_NUM}"
+          fi
+
+          echo "target-revision=${TARGET_REVISION}" >> $GITHUB_OUTPUT
+
+          # Verify target revision exists
+          if ! aws ecs describe-task-definition --task-definition ${TARGET_REVISION} >/dev/null 2>&1; then
+            echo "❌ Target revision ${TARGET_REVISION} does not exist"
+            echo "can-rollback=false" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+
+          echo "✅ Rollback validation passed"
+          echo "can-rollback=true" >> $GITHUB_OUTPUT
+
+          echo "## 📋 Rollback Plan" >> $GITHUB_STEP_SUMMARY
+          echo "- **Service**: ${{ inputs.service_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Cluster**: ${{ inputs.cluster_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **From**: ${CURRENT_TASK_DEF}" >> $GITHUB_STEP_SUMMARY
+          echo "- **To**: ${TARGET_REVISION}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Reason**: ${{ inputs.reason }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Environment**: ${{ inputs.environment }}" >> $GITHUB_STEP_SUMMARY
+
+  rollback:
+    name: Execute Rollback
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    needs: [pre-rollback]
+    if: ${{ needs.pre-rollback.outputs.can-rollback == 'true' }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Execute rollback
+        uses: ./aws/actions/rollback-ecs
+        with:
+          cluster_name: ${{ inputs.cluster_name }}
+          service_name: ${{ inputs.service_name }}
+          rollback_to_revision: ${{ inputs.rollback_to_revision }}
+          rollback_steps: ${{ inputs.rollback_steps }}
+          aws_region: ${{ inputs.aws_region }}
+          oidc_role_arn: ${{ secrets.oidc_role_arn }}
+          wait_for_stability: ${{ inputs.wait_for_stability }}
+          confirmation_required: ${{ inputs.confirmation_required }}
+          reason: ${{ inputs.reason }}
+
+      - name: Post-rollback notification
+        run: |
+          echo "## 🔄 Rollback Execution Complete" >> $GITHUB_STEP_SUMMARY
+          echo "The rollback has been executed for environment: **${{ inputs.environment }}**" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Next Steps:**" >> $GITHUB_STEP_SUMMARY
+          echo "1. Verify application functionality" >> $GITHUB_STEP_SUMMARY
+          echo "2. Check application logs" >> $GITHUB_STEP_SUMMARY
+          echo "3. Monitor service metrics" >> $GITHUB_STEP_SUMMARY
+          echo "4. Plan corrective actions if needed" >> $GITHUB_STEP_SUMMARY

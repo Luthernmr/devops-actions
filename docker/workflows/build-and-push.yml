@@ -1,0 +1,50 @@
+name: Docker Build & Push (Multi-registry)
+
+on:
+  workflow_call:
+    inputs:
+      dockerfile: { required: true, type: string }
+      context: { required: false, default: ".", type: string }
+      image_name: { required: true, type: string }
+      registry_type: { required: true, type: string }
+      registry_url: { required: true, type: string }
+      tags: { required: false, default: "latest", type: string }
+      aws_region: { required: false, default: "eu-west-3", type: string }
+      oidc_role_arn: { required: false, type: string }
+    secrets:
+      dockerhub_username: { required: false }
+      dockerhub_password: { required: false }
+      acr_username: { required: false }
+      acr_password: { required: false }
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Login to Registry
+        uses: ./docker/actions/login-${{ inputs.registry_type }}
+        with:
+          oidc_role_arn: ${{ inputs.oidc_role_arn }}
+          aws_region: ${{ inputs.aws_region }}
+        secrets:
+          dockerhub_username: ${{ secrets.dockerhub_username }}
+          dockerhub_password: ${{ secrets.dockerhub_password }}
+          acr_username: ${{ secrets.acr_username }}
+          acr_password: ${{ secrets.acr_password }}
+
+      - name: Build and Tag Image
+        uses: ./docker/actions/build-and-tag
+        with:
+          dockerfile: ${{ inputs.dockerfile }}
+          context: ${{ inputs.context }}
+          image_name: ${{ inputs.image_name }}
+          registry_url: ${{ inputs.registry_url }}
+          tags: ${{ inputs.tags }}
+
+      - name: Push Image(s)
+        run: |
+          for tag in $(echo "${{ inputs.tags }}" | tr "," "\n"); do
+            docker push ${{ inputs.registry_url }}/${{ inputs.image_name }}:$tag
+          done

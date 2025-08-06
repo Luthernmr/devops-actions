@@ -1,0 +1,264 @@
+name: Rollback AWS ECS Deployment
+description: Rolls back an ECS service to a previous task definition revision
+
+inputs:
+  cluster_name:
+    description: "Name of the ECS cluster"
+    required: true
+  service_name:
+    description: "Name of the ECS service"
+    required: true
+  rollback_to_revision:
+    description: "Specific task definition revision to rollback to (e.g., 'my-app:123'). If not provided, rolls back to previous revision"
+    required: false
+  rollback_steps:
+    description: "Number of revisions to rollback (default: 1)"
+    required: false
+    default: "1"
+  aws_region:
+    description: "AWS region where the ECS resources are located"
+    required: true
+  oidc_role_arn:
+    description: "ARN of the AWS IAM role to assume for ECS deployment"
+    required: true
+  wait_for_stability:
+    description: "Whether to wait for the service to reach a stable state after rollback"
+    required: false
+    default: "true"
+  confirmation_required:
+    description: "Whether to require manual confirmation before rollback (for safety)"
+    required: false
+    default: "false"
+  reason:
+    description: "Reason for the rollback (for logging and audit purposes)"
+    required: false
+    default: "Manual rollback initiated"
+
+outputs:
+  previous_task_definition:
+    description: "The task definition that was running before rollback"
+    value: ${{ steps.rollback.outputs.previous-task-definition }}
+  new_task_definition:
+    description: "The task definition after rollback"
+    value: ${{ steps.rollback.outputs.new-task-definition }}
+  rollback_successful:
+    description: "Whether the rollback was successful"
+    value: ${{ steps.rollback.outputs.rollback-successful }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v3
+      with:
+        role-to-assume: ${{ inputs.oidc_role_arn }}
+        aws-region: ${{ inputs.aws_region }}
+
+    - name: Get current service information
+      id: current-service
+      run: |
+        echo "Getting current service information..."
+
+        # Get current service details
+        SERVICE_INFO=$(aws ecs describe-services \
+          --cluster ${{ inputs.cluster_name }} \
+          --services ${{ inputs.service_name }} \
+          --query 'services[0]')
+
+        CURRENT_TASK_DEF=$(echo $SERVICE_INFO | jq -r '.taskDefinition')
+        CURRENT_RUNNING_COUNT=$(echo $SERVICE_INFO | jq -r '.runningCount')
+        CURRENT_DESIRED_COUNT=$(echo $SERVICE_INFO | jq -r '.desiredCount')
+        SERVICE_STATUS=$(echo $SERVICE_INFO | jq -r '.status')
+
+        echo "current-task-definition=${CURRENT_TASK_DEF}" >> $GITHUB_OUTPUT
+        echo "running-count=${CURRENT_RUNNING_COUNT}" >> $GITHUB_OUTPUT
+        echo "desired-count=${CURRENT_DESIRED_COUNT}" >> $GITHUB_OUTPUT
+        echo "service-status=${SERVICE_STATUS}" >> $GITHUB_OUTPUT
+
+        echo "## Current Service State" >> $GITHUB_STEP_SUMMARY
+        echo "- **Service**: ${{ inputs.service_name }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Cluster**: ${{ inputs.cluster_name }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Current Task Definition**: ${CURRENT_TASK_DEF}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Status**: ${SERVICE_STATUS}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Tasks**: ${CURRENT_RUNNING_COUNT}/${CURRENT_DESIRED_COUNT}" >> $GITHUB_STEP_SUMMARY
+      shell: bash
+
+    - name: Determine rollback target
+      id: rollback-target
+      run: |
+        echo "Determining rollback target..."
+
+        if [[ -n "${{ inputs.rollback_to_revision }}" ]]; then
+          # Use specific revision provided
+          TARGET_TASK_DEF="${{ inputs.rollback_to_revision }}"
+          echo "Using specified revision: ${TARGET_TASK_DEF}"
+        else
+          # Get task definition family from current task definition
+          CURRENT_TASK_DEF="${{ steps.current-service.outputs.current-task-definition }}"
+          FAMILY=$(aws ecs describe-task-definition \
+            --task-definition ${CURRENT_TASK_DEF} \
+            --query 'taskDefinition.family' \
+            --output text)
+          
+          # Get current revision number
+          CURRENT_REVISION=$(aws ecs describe-task-definition \
+            --task-definition ${CURRENT_TASK_DEF} \
+            --query 'taskDefinition.revision' \
+            --output text)
+          
+          # Calculate target revision
+          ROLLBACK_STEPS=${{ inputs.rollback_steps }}
+          TARGET_REVISION=$((CURRENT_REVISION - ROLLBACK_STEPS))
+          
+          if [[ ${TARGET_REVISION} -lt 1 ]]; then
+            echo "❌ Cannot rollback ${ROLLBACK_STEPS} steps. Current revision is ${CURRENT_REVISION}"
+            exit 1
+          fi
+          
+          TARGET_TASK_DEF="${FAMILY}:${TARGET_REVISION}"
+          echo "Calculated rollback target: ${TARGET_TASK_DEF}"
+        fi
+
+        # Verify target task definition exists
+        if ! aws ecs describe-task-definition --task-definition ${TARGET_TASK_DEF} >/dev/null 2>&1; then
+          echo "❌ Target task definition ${TARGET_TASK_DEF} does not exist"
+          exit 1
+        fi
+
+        echo "target-task-definition=${TARGET_TASK_DEF}" >> $GITHUB_OUTPUT
+        echo "✅ Rollback target verified: ${TARGET_TASK_DEF}"
+      shell: bash
+
+    - name: Confirmation check
+      if: ${{ inputs.confirmation_required == 'true' }}
+      run: |
+        echo "## ⚠️ Rollback Confirmation Required" >> $GITHUB_STEP_SUMMARY
+        echo "Please review the rollback details and confirm manually." >> $GITHUB_STEP_SUMMARY
+        echo "- **From**: ${{ steps.current-service.outputs.current-task-definition }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **To**: ${{ steps.rollback-target.outputs.target-task-definition }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Reason**: ${{ inputs.reason }}" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "Set 'confirmation_required' to 'false' to proceed with automatic rollback." >> $GITHUB_STEP_SUMMARY
+        exit 1
+      shell: bash
+
+    - name: Execute rollback
+      id: rollback
+      run: |
+        echo "## 🔄 Executing Rollback" >> $GITHUB_STEP_SUMMARY
+        echo "- **Reason**: ${{ inputs.reason }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **From**: ${{ steps.current-service.outputs.current-task-definition }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **To**: ${{ steps.rollback-target.outputs.target-task-definition }}" >> $GITHUB_STEP_SUMMARY
+
+        echo "Starting rollback..."
+        echo "From: ${{ steps.current-service.outputs.current-task-definition }}"
+        echo "To: ${{ steps.rollback-target.outputs.target-task-definition }}"
+
+        # Update the service with the rollback task definition
+        aws ecs update-service \
+          --cluster ${{ inputs.cluster_name }} \
+          --service ${{ inputs.service_name }} \
+          --task-definition ${{ steps.rollback-target.outputs.target-task-definition }}
+
+        echo "previous-task-definition=${{ steps.current-service.outputs.current-task-definition }}" >> $GITHUB_OUTPUT
+        echo "new-task-definition=${{ steps.rollback-target.outputs.target-task-definition }}" >> $GITHUB_OUTPUT
+
+        echo "Rollback command executed successfully"
+      shell: bash
+
+    - name: Wait for rollback stability
+      if: ${{ inputs.wait_for_stability == 'true' }}
+      run: |
+        echo "Waiting for service to stabilize after rollback..."
+
+        # Wait for service to reach stable state
+        aws ecs wait services-stable \
+          --cluster ${{ inputs.cluster_name }} \
+          --services ${{ inputs.service_name }}
+
+        echo "✅ Service has stabilized after rollback"
+      shell: bash
+
+    - name: Verify rollback success
+      id: verify
+      run: |
+        echo "Verifying rollback success..."
+
+        # Get updated service information
+        UPDATED_SERVICE_INFO=$(aws ecs describe-services \
+          --cluster ${{ inputs.cluster_name }} \
+          --services ${{ inputs.service_name }} \
+          --query 'services[0]')
+
+        NEW_TASK_DEF=$(echo $UPDATED_SERVICE_INFO | jq -r '.taskDefinition')
+        NEW_RUNNING_COUNT=$(echo $UPDATED_SERVICE_INFO | jq -r '.runningCount')
+        NEW_DESIRED_COUNT=$(echo $UPDATED_SERVICE_INFO | jq -r '.desiredCount')
+        NEW_STATUS=$(echo $UPDATED_SERVICE_INFO | jq -r '.status')
+
+        echo "## 📊 Rollback Verification" >> $GITHUB_STEP_SUMMARY
+        echo "- **New Task Definition**: ${NEW_TASK_DEF}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Service Status**: ${NEW_STATUS}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Tasks**: ${NEW_RUNNING_COUNT}/${NEW_DESIRED_COUNT}" >> $GITHUB_STEP_SUMMARY
+
+        # Check if rollback was successful
+        if [[ "${NEW_TASK_DEF}" == "${{ steps.rollback-target.outputs.target-task-definition }}" ]]; then
+          echo "✅ Rollback successful!"
+          echo "rollback-successful=true" >> $GITHUB_OUTPUT
+          echo "## ✅ Rollback Completed Successfully" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "❌ Rollback may have failed - task definition mismatch"
+          echo "Expected: ${{ steps.rollback-target.outputs.target-task-definition }}"
+          echo "Actual: ${NEW_TASK_DEF}"
+          echo "rollback-successful=false" >> $GITHUB_OUTPUT
+          echo "## ❌ Rollback Verification Failed" >> $GITHUB_STEP_SUMMARY
+          exit 1
+        fi
+      shell: bash
+
+    - name: Post-rollback health check
+      run: |
+        echo "Performing post-rollback health check..."
+
+        # Wait a bit for tasks to start
+        sleep 30
+
+        # Check service health
+        HEALTH_CHECK_PASSED=true
+
+        # Get service tasks
+        TASKS=$(aws ecs list-tasks \
+          --cluster ${{ inputs.cluster_name }} \
+          --service-name ${{ inputs.service_name }} \
+          --desired-status RUNNING \
+          --query 'taskArns' \
+          --output text)
+
+        if [[ -n "${TASKS}" ]]; then
+          for TASK in ${TASKS}; do
+            TASK_HEALTH=$(aws ecs describe-tasks \
+              --cluster ${{ inputs.cluster_name }} \
+              --tasks ${TASK} \
+              --query 'tasks[0].lastStatus' \
+              --output text)
+            
+            echo "Task ${TASK}: ${TASK_HEALTH}"
+            
+            if [[ "${TASK_HEALTH}" != "RUNNING" ]]; then
+              HEALTH_CHECK_PASSED=false
+            fi
+          done
+        else
+          echo "⚠️ No running tasks found"
+          HEALTH_CHECK_PASSED=false
+        fi
+
+        if [[ "${HEALTH_CHECK_PASSED}" == "true" ]]; then
+          echo "✅ Post-rollback health check passed"
+          echo "## ✅ Health Check Passed" >> $GITHUB_STEP_SUMMARY
+          echo "All tasks are running successfully after rollback." >> $GITHUB_STEP_SUMMARY
+        else
+          echo "⚠️ Post-rollback health check failed"
+          echo "## ⚠️ Health Check Warning" >> $GITHUB_STEP_SUMMARY
+          echo "Some tasks may not be running properly after rollback. Please check manually." >> $GITHUB_STEP_SUMMARY
+        fi
+      shell: bash

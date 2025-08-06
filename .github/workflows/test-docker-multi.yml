@@ -1,0 +1,40 @@
+name: Test Docker Multi Registry
+
+on: workflow_dispatch
+
+jobs:
+  docker:
+    uses: your-org/devops-actions/docker/workflows/build-and-push.yml@main
+    with:
+      dockerfile: ./Dockerfile
+      image_name: my-app
+      registry_type: dockerhub
+      registry_url: docker.io/youruser
+      tags: latest,${{ github.sha }}
+    secrets:
+      dockerhub_username: ${{ secrets.DOCKERHUB_USER }}
+      dockerhub_password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+  docker-acr:
+    uses: your-org/devops-actions/docker/workflows/build-and-push.yml@main
+    with:
+      dockerfile: ./Dockerfile
+      image_name: my-app
+      registry_type: acr
+      registry_url: myregistry.azurecr.io
+      tags: latest,${{ github.sha }}
+    secrets:
+      acr_username: ${{ secrets.ACR_USER }}
+      acr_password: ${{ secrets.ACR_PASSWORD }}
+
+  docker-ecr:
+    uses: your-org/devops-actions/docker/workflows/build-and-push.yml@main
+    with:
+      dockerfile: ./Dockerfile
+      image_name: my-app
+      registry_type: ecr
+      registry_url: 123456789012.dkr.ecr.eu-west-3.amazonaws.com
+      tags: latest,${{ github.sha }}
+      aws_region: eu-west-3
+    secrets:
+      oidc_role_arn: ${{ secrets.OIDC_ROLE_ARN }}

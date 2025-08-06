@@ -1,0 +1,97 @@
+name: Deploy to AWS Lambda
+
+on:
+  workflow_call:
+    inputs:
+      function_name:
+        description: "Name of the Lambda function"
+        required: true
+        type: string
+      zip_file:
+        description: "Path to the zip file containing the Lambda function code"
+        required: false
+        type: string
+      s3_bucket:
+        description: "S3 bucket containing the Lambda function code"
+        required: false
+        type: string
+      s3_key:
+        description: "S3 key of the Lambda function code"
+        required: false
+        type: string
+      source_directory:
+        description: "Directory containing the Lambda function source code (will be zipped)"
+        required: false
+        type: string
+      runtime:
+        description: "Lambda runtime (e.g., python3.9, nodejs18.x)"
+        required: false
+        type: string
+      handler:
+        description: "Lambda function handler"
+        required: false
+        type: string
+      environment_variables:
+        description: "Environment variables as JSON string"
+        required: false
+        type: string
+      aws_region:
+        description: "AWS region where the Lambda function is located"
+        required: true
+        type: string
+      timeout:
+        description: "Function timeout in seconds"
+        required: false
+        type: number
+      memory_size:
+        description: "Function memory size in MB"
+        required: false
+        type: number
+      environment:
+        description: "Environment to deploy to (dev, staging, prod)"
+        required: false
+        type: string
+        default: "dev"
+    secrets:
+      oidc_role_arn:
+        description: "ARN of the AWS IAM role to assume for Lambda deployment"
+        required: true
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy to Lambda
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Deploy to Lambda
+        uses: ./aws/actions/deploy-lambda
+        with:
+          function_name: ${{ inputs.function_name }}
+          zip_file: ${{ inputs.zip_file }}
+          s3_bucket: ${{ inputs.s3_bucket }}
+          s3_key: ${{ inputs.s3_key }}
+          source_directory: ${{ inputs.source_directory }}
+          runtime: ${{ inputs.runtime }}
+          handler: ${{ inputs.handler }}
+          environment_variables: ${{ inputs.environment_variables }}
+          aws_region: ${{ inputs.aws_region }}
+          oidc_role_arn: ${{ secrets.oidc_role_arn }}
+          timeout: ${{ inputs.timeout }}
+          memory_size: ${{ inputs.memory_size }}
+
+      - name: Deployment summary
+        run: |
+          echo "## Lambda Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "- **Function**: ${{ inputs.function_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Runtime**: ${{ inputs.runtime || 'Not specified' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Handler**: ${{ inputs.handler || 'Not specified' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Region**: ${{ inputs.aws_region }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Environment**: ${{ inputs.environment }}" >> $GITHUB_STEP_SUMMARY

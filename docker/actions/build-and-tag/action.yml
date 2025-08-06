@@ -1,0 +1,29 @@
+name: Docker Build and Tag Image
+description: Builds a Docker image from a Dockerfile and applies multiple tags
+
+inputs:
+  dockerfile:
+    description: "Path to the Dockerfile to use for building the image"
+    required: true
+  context:
+    description: "Build context directory for Docker build"
+    required: false
+    default: "."
+  image_name:
+    description: "Name of the Docker image to build"
+    required: true
+  registry_url:
+    description: "URL of the container registry where the image will be pushed"
+    required: true
+  tags:
+    description: "Comma-separated list of tags to apply to the built image"
+    required: true
+
+runs:
+  using: "composite"
+  steps:
+    - run: |
+        for tag in $(echo "${{ inputs.tags }}" | tr "," "\n"); do
+          docker build -f ${{ inputs.dockerfile }} -t ${{ inputs.registry_url }}/${{ inputs.image_name }}:$tag ${{ inputs.context }}
+        done
+      shell: bash

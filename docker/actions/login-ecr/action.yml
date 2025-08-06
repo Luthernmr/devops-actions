@@ -1,0 +1,19 @@
+name: Login to AWS ECR
+description: Authenticates to ECR using OIDC
+
+inputs:
+  oidc_role_arn:
+    description: "The ARN of the AWS IAM role to assume for ECR authentication"
+    required: true
+  aws_region:
+    description: "The AWS region where the ECR registry is located"
+    required: true
+
+runs:
+  using: "composite"
+  steps:
+    - uses: aws-actions/configure-aws-credentials@v3
+      with:
+        role-to-assume: ${{ inputs.oidc_role_arn }}
+        aws-region: ${{ inputs.aws_region }}
+    - uses: aws-actions/amazon-ecr-login@v1

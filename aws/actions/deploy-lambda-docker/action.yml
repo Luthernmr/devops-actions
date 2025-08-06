@@ -1,0 +1,95 @@
+name: Deploy Dockerized Lambda
+description: Deploys a Lambda function using a Docker container image
+
+inputs:
+  function_name:
+    description: "Name of the Lambda function"
+    required: true
+  image_uri:
+    description: "URI of the Docker image in ECR"
+    required: true
+  environment_variables:
+    description: "Environment variables as JSON string"
+    required: false
+  aws_region:
+    description: "AWS region where the Lambda function is located"
+    required: true
+  oidc_role_arn:
+    description: "ARN of the AWS IAM role to assume for Lambda deployment"
+    required: true
+  timeout:
+    description: "Function timeout in seconds"
+    required: false
+  memory_size:
+    description: "Function memory size in MB"
+    required: false
+  ephemeral_storage_size:
+    description: "Ephemeral storage size in MB (512-10240)"
+    required: false
+  architecture:
+    description: "Instruction set architecture (x86_64 or arm64)"
+    required: false
+    default: "x86_64"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v3
+      with:
+        role-to-assume: ${{ inputs.oidc_role_arn }}
+        aws-region: ${{ inputs.aws_region }}
+
+    - name: Update Lambda function code
+      run: |
+        aws lambda update-function-code \
+          --function-name ${{ inputs.function_name }} \
+          --image-uri ${{ inputs.image_uri }}
+      shell: bash
+
+    - name: Wait for function update to complete
+      run: |
+        echo "Waiting for function update to complete..."
+        aws lambda wait function-updated \
+          --function-name ${{ inputs.function_name }}
+      shell: bash
+
+    - name: Update function configuration
+      run: |
+        UPDATE_ARGS=""
+
+        if [[ -n "${{ inputs.timeout }}" ]]; then
+          UPDATE_ARGS="$UPDATE_ARGS --timeout ${{ inputs.timeout }}"
+        fi
+
+        if [[ -n "${{ inputs.memory_size }}" ]]; then
+          UPDATE_ARGS="$UPDATE_ARGS --memory-size ${{ inputs.memory_size }}"
+        fi
+
+        if [[ -n "${{ inputs.ephemeral_storage_size }}" ]]; then
+          UPDATE_ARGS="$UPDATE_ARGS --ephemeral-storage Size=${{ inputs.ephemeral_storage_size }}"
+        fi
+
+        if [[ -n "${{ inputs.architecture }}" ]]; then
+          UPDATE_ARGS="$UPDATE_ARGS --architectures ${{ inputs.architecture }}"
+        fi
+
+        if [[ -n "${{ inputs.environment_variables }}" ]]; then
+          UPDATE_ARGS="$UPDATE_ARGS --environment Variables='${{ inputs.environment_variables }}'"
+        fi
+
+        if [[ -n "$UPDATE_ARGS" ]]; then
+          aws lambda update-function-configuration \
+            --function-name ${{ inputs.function_name }} \
+            $UPDATE_ARGS
+        else
+          echo "No configuration updates specified"
+        fi
+      shell: bash
+
+    - name: Wait for configuration update to complete
+      run: |
+        echo "Waiting for configuration update to complete..."
+        aws lambda wait function-updated \
+          --function-name ${{ inputs.function_name }}
+      shell: bash

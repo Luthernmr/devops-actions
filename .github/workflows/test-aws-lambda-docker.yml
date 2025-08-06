@@ -1,0 +1,34 @@
+name: Test AWS Dockerized Lambda Deployment
+
+on: workflow_dispatch
+
+jobs:
+  deploy-lambda-docker:
+    uses: your-org/devops-actions/aws/workflows/deploy-lambda-docker.yml@main
+    with:
+      function_name: my-dockerized-lambda
+      image_uri: 123456789012.dkr.ecr.us-east-1.amazonaws.com/my-lambda:latest
+      environment_variables: '{"ENV":"dev","LOG_LEVEL":"INFO"}'
+      aws_region: us-east-1
+      timeout: 120
+      memory_size: 1024
+      ephemeral_storage_size: 2048
+      architecture: x86_64
+      environment: dev
+    secrets:
+      oidc_role_arn: ${{ secrets.LAMBDA_OIDC_ROLE_ARN }}
+
+  deploy-lambda-docker-arm:
+    uses: your-org/devops-actions/aws/workflows/deploy-lambda-docker.yml@main
+    with:
+      function_name: my-arm-lambda
+      image_uri: 123456789012.dkr.ecr.us-east-1.amazonaws.com/my-lambda-arm:${{ github.sha }}
+      environment_variables: '{"ENV":"prod","ARCH":"arm64"}'
+      aws_region: us-east-1
+      timeout: 300
+      memory_size: 2048
+      ephemeral_storage_size: 5120
+      architecture: arm64
+      environment: prod
+    secrets:
+      oidc_role_arn: ${{ secrets.LAMBDA_OIDC_ROLE_ARN }}

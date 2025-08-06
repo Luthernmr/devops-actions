@@ -1,0 +1,215 @@
+name: Deploy to AWS ECS
+description: Deploys a Docker image to AWS ECS service
+
+inputs:
+  cluster_name:
+    description: "Name of the ECS cluster"
+    required: true
+  service_name:
+    description: "Name of the ECS service"
+    required: true
+  task_definition:
+    description: "Path to the ECS task definition file or task definition family name"
+    required: true
+  image_uri:
+    description: "URI of the Docker image to deploy"
+    required: true
+  container_name:
+    description: "Name of the container in the task definition to update"
+    required: true
+  aws_region:
+    description: "AWS region where the ECS resources are located"
+    required: true
+  oidc_role_arn:
+    description: "ARN of the AWS IAM role to assume for ECS deployment"
+    required: true
+  wait_for_stability:
+    description: "Whether to wait for the service to reach a stable state"
+    required: false
+    default: "true"
+  auto_rollback_on_failure:
+    description: "Automatically rollback on deployment failure"
+    required: false
+    default: "false"
+  rollback_timeout:
+    description: "Timeout in minutes before triggering rollback (only if auto_rollback_on_failure is true)"
+    required: false
+    default: "10"
+  health_check_grace_period:
+    description: "Grace period in seconds before starting health checks"
+    required: false
+    default: "60"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v3
+      with:
+        role-to-assume: ${{ inputs.oidc_role_arn }}
+        aws-region: ${{ inputs.aws_region }}
+
+    - name: Store current task definition for rollback
+      id: backup
+      run: |
+        echo "Storing current task definition for potential rollback..."
+
+        CURRENT_SERVICE=$(aws ecs describe-services \
+          --cluster ${{ inputs.cluster_name }} \
+          --services ${{ inputs.service_name }} \
+          --query 'services[0]')
+
+        CURRENT_TASK_DEF=$(echo $CURRENT_SERVICE | jq -r '.taskDefinition')
+        CURRENT_RUNNING_COUNT=$(echo $CURRENT_SERVICE | jq -r '.runningCount')
+
+        echo "current-task-definition=${CURRENT_TASK_DEF}" >> $GITHUB_OUTPUT
+        echo "current-running-count=${CURRENT_RUNNING_COUNT}" >> $GITHUB_OUTPUT
+
+        echo "Backup stored - Current task definition: ${CURRENT_TASK_DEF}"
+      shell: bash
+
+    - name: Download task definition
+      run: |
+        if [[ -f "${{ inputs.task_definition }}" ]]; then
+          echo "Using task definition file: ${{ inputs.task_definition }}"
+          cp "${{ inputs.task_definition }}" task-definition.json
+        else
+          echo "Downloading task definition for family: ${{ inputs.task_definition }}"
+          aws ecs describe-task-definition \
+            --task-definition ${{ inputs.task_definition }} \
+            --query taskDefinition > task-definition.json
+        fi
+      shell: bash
+
+    - name: Update task definition
+      id: task-def
+      uses: aws-actions/amazon-ecs-render-task-definition@v1
+      with:
+        task-definition: task-definition.json
+        container-name: ${{ inputs.container_name }}
+        image: ${{ inputs.image_uri }}
+
+    - name: Deploy to ECS
+      id: deploy
+      uses: aws-actions/amazon-ecs-deploy-task-definition@v1
+      with:
+        task-definition: ${{ steps.task-def.outputs.task-definition }}
+        service: ${{ inputs.service_name }}
+        cluster: ${{ inputs.cluster_name }}
+        wait-for-service-stability: ${{ inputs.wait_for_stability }}
+
+    - name: Post-deployment health check
+      id: health-check
+      if: ${{ inputs.auto_rollback_on_failure == 'true' }}
+      run: |
+        echo "Performing post-deployment health check..."
+
+        # Wait for grace period
+        echo "Waiting ${{ inputs.health_check_grace_period }} seconds for grace period..."
+        sleep ${{ inputs.health_check_grace_period }}
+
+        # Check service health
+        HEALTH_CHECK_PASSED=true
+        TIMEOUT_MINUTES=${{ inputs.rollback_timeout }}
+        END_TIME=$(($(date +%s) + TIMEOUT_MINUTES * 60))
+
+        while [[ $(date +%s) -lt $END_TIME ]]; do
+          SERVICE_INFO=$(aws ecs describe-services \
+            --cluster ${{ inputs.cluster_name }} \
+            --services ${{ inputs.service_name }} \
+            --query 'services[0]')
+          
+          RUNNING_COUNT=$(echo $SERVICE_INFO | jq -r '.runningCount')
+          DESIRED_COUNT=$(echo $SERVICE_INFO | jq -r '.desiredCount')
+          
+          echo "Current tasks: ${RUNNING_COUNT}/${DESIRED_COUNT}"
+          
+          if [[ ${RUNNING_COUNT} -eq ${DESIRED_COUNT} && ${RUNNING_COUNT} -gt 0 ]]; then
+            # Check if tasks are healthy
+            TASKS=$(aws ecs list-tasks \
+              --cluster ${{ inputs.cluster_name }} \
+              --service-name ${{ inputs.service_name }} \
+              --desired-status RUNNING \
+              --query 'taskArns' \
+              --output text)
+            
+            ALL_HEALTHY=true
+            for TASK in ${TASKS}; do
+              TASK_STATUS=$(aws ecs describe-tasks \
+                --cluster ${{ inputs.cluster_name }} \
+                --tasks ${TASK} \
+                --query 'tasks[0].lastStatus' \
+                --output text)
+              
+              if [[ "${TASK_STATUS}" != "RUNNING" ]]; then
+                ALL_HEALTHY=false
+                break
+              fi
+            done
+            
+            if [[ "${ALL_HEALTHY}" == "true" ]]; then
+              echo "✅ Health check passed - all tasks are running"
+              HEALTH_CHECK_PASSED=true
+              break
+            fi
+          fi
+          
+          echo "Waiting for tasks to become healthy..."
+          sleep 30
+        done
+
+        if [[ $(date +%s) -ge $END_TIME ]]; then
+          echo "❌ Health check timeout reached"
+          HEALTH_CHECK_PASSED=false
+        fi
+
+        echo "health-check-passed=${HEALTH_CHECK_PASSED}" >> $GITHUB_OUTPUT
+
+        if [[ "${HEALTH_CHECK_PASSED}" != "true" ]]; then
+          echo "Health check failed - deployment may need rollback"
+          exit 1
+        fi
+      shell: bash
+
+    - name: Automatic rollback
+      if: ${{ failure() && inputs.auto_rollback_on_failure == 'true' }}
+      run: |
+        echo "## 🚨 Deployment Failed - Initiating Automatic Rollback" >> $GITHUB_STEP_SUMMARY
+        echo "Deployment or health check failed. Rolling back to previous task definition..." >> $GITHUB_STEP_SUMMARY
+
+        echo "Rolling back to: ${{ steps.backup.outputs.current-task-definition }}"
+
+        # Rollback to previous task definition
+        aws ecs update-service \
+          --cluster ${{ inputs.cluster_name }} \
+          --service ${{ inputs.service_name }} \
+          --task-definition ${{ steps.backup.outputs.current-task-definition }}
+
+        echo "Rollback initiated. Waiting for service stability..."
+
+        if [[ "${{ inputs.wait_for_stability }}" == "true" ]]; then
+          aws ecs wait services-stable \
+            --cluster ${{ inputs.cluster_name }} \
+            --services ${{ inputs.service_name }}
+          echo "✅ Rollback completed successfully"
+          echo "## ✅ Automatic Rollback Completed" >> $GITHUB_STEP_SUMMARY
+        fi
+
+        echo "Service rolled back to previous task definition"
+      shell: bash
+
+    - name: Deployment summary
+      if: success()
+      run: |
+        echo "## ✅ ECS Deployment Successful" >> $GITHUB_STEP_SUMMARY
+        echo "- **Cluster**: ${{ inputs.cluster_name }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Service**: ${{ inputs.service_name }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Previous Task Definition**: ${{ steps.backup.outputs.current-task-definition }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **New Image**: ${{ inputs.image_uri }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Container**: ${{ inputs.container_name }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Region**: ${{ inputs.aws_region }}" >> $GITHUB_STEP_SUMMARY
+
+        if [[ "${{ inputs.auto_rollback_on_failure }}" == "true" ]]; then
+          echo "- **Auto-rollback**: Enabled (timeout: ${{ inputs.rollback_timeout }}m)" >> $GITHUB_STEP_SUMMARY
+        fi
+      shell: bash

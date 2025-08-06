@@ -1,0 +1,174 @@
+name: Test AWS ECS Blue-Green Deployment
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, develop, staging, prod]
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  # Determine environment based on branch
+  configure:
+    runs-on: ubuntu-latest
+    outputs:
+      environment: ${{ steps.config.outputs.environment }}
+      deploy_to_staging: ${{ steps.config.outputs.deploy_to_staging }}
+      deploy_to_prod: ${{ steps.config.outputs.deploy_to_prod }}
+      deploy_to_dev: ${{ steps.config.outputs.deploy_to_dev }}
+      cluster_suffix: ${{ steps.config.outputs.cluster_suffix }}
+      image_tag: ${{ steps.config.outputs.image_tag }}
+    steps:
+      - name: Configure deployment
+        id: config
+        run: |
+          case "${{ github.ref_name }}" in
+            main|master)
+              echo "environment=prod" >> $GITHUB_OUTPUT
+              echo "deploy_to_prod=true" >> $GITHUB_OUTPUT
+              echo "deploy_to_staging=false" >> $GITHUB_OUTPUT
+              echo "deploy_to_dev=false" >> $GITHUB_OUTPUT
+              echo "cluster_suffix=prod" >> $GITHUB_OUTPUT
+              echo "image_tag=latest" >> $GITHUB_OUTPUT
+              ;;
+            staging)
+              echo "environment=staging" >> $GITHUB_OUTPUT
+              echo "deploy_to_prod=false" >> $GITHUB_OUTPUT
+              echo "deploy_to_staging=true" >> $GITHUB_OUTPUT
+              echo "deploy_to_dev=false" >> $GITHUB_OUTPUT
+              echo "cluster_suffix=staging" >> $GITHUB_OUTPUT
+              echo "image_tag=staging-${{ github.sha }}" >> $GITHUB_OUTPUT
+              ;;
+            develop|dev)
+              echo "environment=dev" >> $GITHUB_OUTPUT
+              echo "deploy_to_prod=false" >> $GITHUB_OUTPUT
+              echo "deploy_to_staging=false" >> $GITHUB_OUTPUT
+              echo "deploy_to_dev=true" >> $GITHUB_OUTPUT
+              echo "cluster_suffix=dev" >> $GITHUB_OUTPUT
+              echo "image_tag=dev-${{ github.sha }}" >> $GITHUB_OUTPUT
+              ;;
+            *)
+              echo "environment=dev" >> $GITHUB_OUTPUT
+              echo "deploy_to_prod=false" >> $GITHUB_OUTPUT
+              echo "deploy_to_staging=false" >> $GITHUB_OUTPUT
+              echo "deploy_to_dev=true" >> $GITHUB_OUTPUT
+              echo "cluster_suffix=dev" >> $GITHUB_OUTPUT
+              echo "image_tag=feature-${{ github.sha }}" >> $GITHUB_OUTPUT
+              ;;
+          esac
+
+          echo "## 🚀 Deployment Configuration" >> $GITHUB_STEP_SUMMARY
+          echo "- **Branch**: ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Environment**: $(cat $GITHUB_OUTPUT | grep environment= | cut -d= -f2)" >> $GITHUB_STEP_SUMMARY
+          echo "- **Image Tag**: $(cat $GITHUB_OUTPUT | grep image_tag= | cut -d= -f2)" >> $GITHUB_STEP_SUMMARY
+
+  # Development environment deployment
+  deploy-ecs-dev:
+    needs: configure
+    if: ${{ needs.configure.outputs.deploy_to_dev == 'true' }}
+    uses: your-org/devops-actions/aws/workflows/deploy-ecs-blue-green.yml@main
+    with:
+      cluster_name: my-app-${{ needs.configure.outputs.cluster_suffix }}-cluster
+      service_name: my-app-${{ needs.configure.outputs.cluster_suffix }}-service
+      task_definition: my-app-${{ needs.configure.outputs.cluster_suffix }}-task-definition
+      image_uri: 123456789012.dkr.ecr.us-east-1.amazonaws.com/my-app:${{ needs.configure.outputs.image_tag }}
+      container_name: my-app-container
+      aws_region: us-east-1
+      codedeploy_application_name: my-app-codedeploy
+      codedeploy_deployment_group: my-app-${{ needs.configure.outputs.cluster_suffix }}-deployment-group
+      codedeploy_config_name: CodeDeployDefault.ECSAllAtOnceBlueGreen
+      wait_for_deployment: true
+      deployment_timeout: 15
+      auto_rollback_enabled: true
+      termination_wait_time: 3
+      environment: ${{ needs.configure.outputs.environment }}
+      pre_deployment_checks: true
+    secrets:
+      oidc_role_arn: ${{ secrets.ECS_BLUE_GREEN_DEV_OIDC_ROLE_ARN }}
+
+  # Staging environment deployment
+  deploy-ecs-staging:
+    needs: configure
+    if: ${{ needs.configure.outputs.deploy_to_staging == 'true' }}
+    uses: your-org/devops-actions/aws/workflows/deploy-ecs-blue-green.yml@main
+    with:
+      cluster_name: my-app-${{ needs.configure.outputs.cluster_suffix }}-cluster
+      service_name: my-app-${{ needs.configure.outputs.cluster_suffix }}-service
+      task_definition: my-app-${{ needs.configure.outputs.cluster_suffix }}-task-definition
+      image_uri: 123456789012.dkr.ecr.us-east-1.amazonaws.com/my-app:${{ needs.configure.outputs.image_tag }}
+      container_name: my-app-container
+      aws_region: us-east-1
+      codedeploy_application_name: my-app-codedeploy
+      codedeploy_deployment_group: my-app-${{ needs.configure.outputs.cluster_suffix }}-deployment-group
+      codedeploy_config_name: CodeDeployDefault.ECSAllAtOnceBlueGreen
+      wait_for_deployment: true
+      deployment_timeout: 20
+      auto_rollback_enabled: true
+      termination_wait_time: 5
+      environment: ${{ needs.configure.outputs.environment }}
+      pre_deployment_checks: true
+    secrets:
+      oidc_role_arn: ${{ secrets.ECS_BLUE_GREEN_STAGING_OIDC_ROLE_ARN }}
+
+  # Production environment deployment
+  deploy-ecs-prod:
+    needs: configure
+    if: ${{ needs.configure.outputs.deploy_to_prod == 'true' }}
+    uses: your-org/devops-actions/aws/workflows/deploy-ecs-blue-green.yml@main
+    with:
+      cluster_name: my-app-${{ needs.configure.outputs.cluster_suffix }}-cluster
+      service_name: my-app-${{ needs.configure.outputs.cluster_suffix }}-service
+      task_definition: my-app-${{ needs.configure.outputs.cluster_suffix }}-task-definition
+      image_uri: 123456789012.dkr.ecr.us-east-1.amazonaws.com/my-app:${{ needs.configure.outputs.image_tag }}
+      container_name: my-app-container
+      aws_region: us-east-1
+      codedeploy_application_name: my-app-codedeploy
+      codedeploy_deployment_group: my-app-${{ needs.configure.outputs.cluster_suffix }}-deployment-group
+      codedeploy_config_name: CodeDeployDefault.ECSLinear10PercentEvery1Minutes
+      wait_for_deployment: true
+      deployment_timeout: 45
+      auto_rollback_enabled: true
+      termination_wait_time: 10
+      environment: ${{ needs.configure.outputs.environment }}
+      pre_deployment_checks: true
+    secrets:
+      oidc_role_arn: ${{ secrets.ECS_BLUE_GREEN_PROD_OIDC_ROLE_ARN }}
+
+  # Deployment summary
+  deployment-summary:
+    needs: [configure, deploy-ecs-dev, deploy-ecs-staging, deploy-ecs-prod]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deployment Summary
+        run: |
+          echo "## 📋 Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "- **Branch**: ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Target Environment**: ${{ needs.configure.outputs.environment }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Image Tag**: ${{ needs.configure.outputs.image_tag }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # Check deployment results
+          if [[ "${{ needs.deploy-ecs-dev.result }}" == "success" ]]; then
+            echo "✅ **Development Deployment**: Successful" >> $GITHUB_STEP_SUMMARY
+          elif [[ "${{ needs.deploy-ecs-dev.result }}" == "failure" ]]; then
+            echo "❌ **Development Deployment**: Failed" >> $GITHUB_STEP_SUMMARY
+          elif [[ "${{ needs.deploy-ecs-dev.result }}" == "skipped" ]]; then
+            echo "⏭️ **Development Deployment**: Skipped" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          if [[ "${{ needs.deploy-ecs-staging.result }}" == "success" ]]; then
+            echo "✅ **Staging Deployment**: Successful" >> $GITHUB_STEP_SUMMARY
+          elif [[ "${{ needs.deploy-ecs-staging.result }}" == "failure" ]]; then
+            echo "❌ **Staging Deployment**: Failed" >> $GITHUB_STEP_SUMMARY
+          elif [[ "${{ needs.deploy-ecs-staging.result }}" == "skipped" ]]; then
+            echo "⏭️ **Staging Deployment**: Skipped" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          if [[ "${{ needs.deploy-ecs-prod.result }}" == "success" ]]; then
+            echo "✅ **Production Deployment**: Successful" >> $GITHUB_STEP_SUMMARY
+          elif [[ "${{ needs.deploy-ecs-prod.result }}" == "failure" ]]; then
+            echo "❌ **Production Deployment**: Failed" >> $GITHUB_STEP_SUMMARY
+          elif [[ "${{ needs.deploy-ecs-prod.result }}" == "skipped" ]]; then
+            echo "⏭️ **Production Deployment**: Skipped" >> $GITHUB_STEP_SUMMARY
+          fi

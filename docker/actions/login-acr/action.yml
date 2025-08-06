@@ -1,0 +1,16 @@
+name: Login to Azure Container Registry
+description: Authenticates to Azure Container Registry using username and password
+
+inputs:
+  acr_username:
+    description: "The username for Azure Container Registry authentication"
+    required: true
+  acr_password:
+    description: "The password or access token for Azure Container Registry authentication"
+    required: true
+
+runs:
+  using: "composite"
+  steps:
+    - run: echo "${{ inputs.acr_password }}" | docker login ${{ inputs.acr_username }} --username ${{ inputs.acr_username }} --password-stdin
+      shell: bash

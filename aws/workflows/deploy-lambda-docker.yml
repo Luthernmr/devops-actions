@@ -1,0 +1,83 @@
+name: Deploy Dockerized Lambda
+
+on:
+  workflow_call:
+    inputs:
+      function_name:
+        description: "Name of the Lambda function"
+        required: true
+        type: string
+      image_uri:
+        description: "URI of the Docker image in ECR"
+        required: true
+        type: string
+      environment_variables:
+        description: "Environment variables as JSON string"
+        required: false
+        type: string
+      aws_region:
+        description: "AWS region where the Lambda function is located"
+        required: true
+        type: string
+      timeout:
+        description: "Function timeout in seconds"
+        required: false
+        type: number
+      memory_size:
+        description: "Function memory size in MB"
+        required: false
+        type: number
+      ephemeral_storage_size:
+        description: "Ephemeral storage size in MB (512-10240)"
+        required: false
+        type: number
+      architecture:
+        description: "Instruction set architecture (x86_64 or arm64)"
+        required: false
+        type: string
+        default: "x86_64"
+      environment:
+        description: "Environment to deploy to (dev, staging, prod)"
+        required: false
+        type: string
+        default: "dev"
+    secrets:
+      oidc_role_arn:
+        description: "ARN of the AWS IAM role to assume for Lambda deployment"
+        required: true
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy Dockerized Lambda
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Deploy Dockerized Lambda
+        uses: ./aws/actions/deploy-lambda-docker
+        with:
+          function_name: ${{ inputs.function_name }}
+          image_uri: ${{ inputs.image_uri }}
+          environment_variables: ${{ inputs.environment_variables }}
+          aws_region: ${{ inputs.aws_region }}
+          oidc_role_arn: ${{ secrets.oidc_role_arn }}
+          timeout: ${{ inputs.timeout }}
+          memory_size: ${{ inputs.memory_size }}
+          ephemeral_storage_size: ${{ inputs.ephemeral_storage_size }}
+          architecture: ${{ inputs.architecture }}
+
+      - name: Deployment summary
+        run: |
+          echo "## Dockerized Lambda Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "- **Function**: ${{ inputs.function_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Image**: ${{ inputs.image_uri }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Architecture**: ${{ inputs.architecture }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Region**: ${{ inputs.aws_region }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Environment**: ${{ inputs.environment }}" >> $GITHUB_STEP_SUMMARY

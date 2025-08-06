@@ -1,0 +1,210 @@
+name: Test AWS Lambda Deployment
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, develop, staging, prod]
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  # Determine environment based on branch
+  configure:
+    runs-on: ubuntu-latest
+    outputs:
+      environment: ${{ steps.config.outputs.environment }}
+      deploy_to_staging: ${{ steps.config.outputs.deploy_to_staging }}
+      deploy_to_prod: ${{ steps.config.outputs.deploy_to_prod }}
+      deploy_to_dev: ${{ steps.config.outputs.deploy_to_dev }}
+      function_suffix: ${{ steps.config.outputs.function_suffix }}
+      runtime: ${{ steps.config.outputs.runtime }}
+      memory_size: ${{ steps.config.outputs.memory_size }}
+      timeout: ${{ steps.config.outputs.timeout }}
+      env_variables: ${{ steps.config.outputs.env_variables }}
+    steps:
+      - name: Configure deployment
+        id: config
+        run: |
+          case "${{ github.ref_name }}" in
+            main|master)
+              echo "environment=prod" >> $GITHUB_OUTPUT
+              echo "deploy_to_prod=true" >> $GITHUB_OUTPUT
+              echo "deploy_to_staging=false" >> $GITHUB_OUTPUT
+              echo "deploy_to_dev=false" >> $GITHUB_OUTPUT
+              echo "function_suffix=prod" >> $GITHUB_OUTPUT
+              echo "runtime=python3.9" >> $GITHUB_OUTPUT
+              echo "memory_size=1024" >> $GITHUB_OUTPUT
+              echo "timeout=60" >> $GITHUB_OUTPUT
+              echo 'env_variables={"ENV":"production","DEBUG":"false","LOG_LEVEL":"INFO"}' >> $GITHUB_OUTPUT
+              ;;
+            staging)
+              echo "environment=staging" >> $GITHUB_OUTPUT
+              echo "deploy_to_prod=false" >> $GITHUB_OUTPUT
+              echo "deploy_to_staging=true" >> $GITHUB_OUTPUT
+              echo "deploy_to_dev=false" >> $GITHUB_OUTPUT
+              echo "function_suffix=staging" >> $GITHUB_OUTPUT
+              echo "runtime=python3.9" >> $GITHUB_OUTPUT
+              echo "memory_size=512" >> $GITHUB_OUTPUT
+              echo "timeout=45" >> $GITHUB_OUTPUT
+              echo 'env_variables={"ENV":"staging","DEBUG":"true","LOG_LEVEL":"DEBUG"}' >> $GITHUB_OUTPUT
+              ;;
+            develop|dev)
+              echo "environment=dev" >> $GITHUB_OUTPUT
+              echo "deploy_to_prod=false" >> $GITHUB_OUTPUT
+              echo "deploy_to_staging=false" >> $GITHUB_OUTPUT
+              echo "deploy_to_dev=true" >> $GITHUB_OUTPUT
+              echo "function_suffix=dev" >> $GITHUB_OUTPUT
+              echo "runtime=python3.9" >> $GITHUB_OUTPUT
+              echo "memory_size=256" >> $GITHUB_OUTPUT
+              echo "timeout=30" >> $GITHUB_OUTPUT
+              echo 'env_variables={"ENV":"development","DEBUG":"true","LOG_LEVEL":"DEBUG"}' >> $GITHUB_OUTPUT
+              ;;
+            *)
+              echo "environment=dev" >> $GITHUB_OUTPUT
+              echo "deploy_to_prod=false" >> $GITHUB_OUTPUT
+              echo "deploy_to_staging=false" >> $GITHUB_OUTPUT
+              echo "deploy_to_dev=true" >> $GITHUB_OUTPUT
+              echo "function_suffix=feature" >> $GITHUB_OUTPUT
+              echo "runtime=python3.9" >> $GITHUB_OUTPUT
+              echo "memory_size=256" >> $GITHUB_OUTPUT
+              echo "timeout=30" >> $GITHUB_OUTPUT
+              echo 'env_variables={"ENV":"feature","DEBUG":"true","LOG_LEVEL":"DEBUG","BRANCH":"${{ github.ref_name }}"}' >> $GITHUB_OUTPUT
+              ;;
+          esac
+
+          echo "## 🚀 Lambda Deployment Configuration" >> $GITHUB_STEP_SUMMARY
+          echo "- **Branch**: ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Environment**: $(cat $GITHUB_OUTPUT | grep environment= | cut -d= -f2)" >> $GITHUB_STEP_SUMMARY
+          echo "- **Function Suffix**: $(cat $GITHUB_OUTPUT | grep function_suffix= | cut -d= -f2)" >> $GITHUB_STEP_SUMMARY
+          echo "- **Runtime**: $(cat $GITHUB_OUTPUT | grep runtime= | cut -d= -f2)" >> $GITHUB_STEP_SUMMARY
+          echo "- **Memory**: $(cat $GITHUB_OUTPUT | grep memory_size= | cut -d= -f2) MB" >> $GITHUB_STEP_SUMMARY
+
+  # Development environment deployment
+  deploy-lambda-dev:
+    needs: configure
+    if: ${{ needs.configure.outputs.deploy_to_dev == 'true' }}
+    uses: your-org/devops-actions/aws/workflows/deploy-lambda.yml@main
+    with:
+      function_name: my-lambda-function-${{ needs.configure.outputs.function_suffix }}
+      source_directory: ./lambda-src
+      runtime: ${{ needs.configure.outputs.runtime }}
+      handler: lambda_function.lambda_handler
+      environment_variables: ${{ needs.configure.outputs.env_variables }}
+      aws_region: us-east-1
+      timeout: ${{ needs.configure.outputs.timeout }}
+      memory_size: ${{ needs.configure.outputs.memory_size }}
+      environment: ${{ needs.configure.outputs.environment }}
+    secrets:
+      oidc_role_arn: ${{ secrets.LAMBDA_DEV_OIDC_ROLE_ARN }}
+
+  # Staging environment deployment
+  deploy-lambda-staging:
+    needs: configure
+    if: ${{ needs.configure.outputs.deploy_to_staging == 'true' }}
+    uses: your-org/devops-actions/aws/workflows/deploy-lambda.yml@main
+    with:
+      function_name: my-lambda-function-${{ needs.configure.outputs.function_suffix }}
+      source_directory: ./lambda-src
+      runtime: ${{ needs.configure.outputs.runtime }}
+      handler: lambda_function.lambda_handler
+      environment_variables: ${{ needs.configure.outputs.env_variables }}
+      aws_region: us-east-1
+      timeout: ${{ needs.configure.outputs.timeout }}
+      memory_size: ${{ needs.configure.outputs.memory_size }}
+      environment: ${{ needs.configure.outputs.environment }}
+    secrets:
+      oidc_role_arn: ${{ secrets.LAMBDA_STAGING_OIDC_ROLE_ARN }}
+
+  # Production environment deployment
+  deploy-lambda-prod:
+    needs: configure
+    if: ${{ needs.configure.outputs.deploy_to_prod == 'true' }}
+    uses: your-org/devops-actions/aws/workflows/deploy-lambda.yml@main
+    with:
+      function_name: my-lambda-function-${{ needs.configure.outputs.function_suffix }}
+      source_directory: ./lambda-src
+      runtime: ${{ needs.configure.outputs.runtime }}
+      handler: lambda_function.lambda_handler
+      environment_variables: ${{ needs.configure.outputs.env_variables }}
+      aws_region: us-east-1
+      timeout: ${{ needs.configure.outputs.timeout }}
+      memory_size: ${{ needs.configure.outputs.memory_size }}
+      environment: ${{ needs.configure.outputs.environment }}
+    secrets:
+      oidc_role_arn: ${{ secrets.LAMBDA_PROD_OIDC_ROLE_ARN }}
+
+  # S3-based deployment example (for comparison)
+  deploy-lambda-s3-example:
+    needs: configure
+    if: ${{ needs.configure.outputs.deploy_to_prod == 'true' }}
+    uses: your-org/devops-actions/aws/workflows/deploy-lambda.yml@main
+    with:
+      function_name: my-lambda-function-s3-${{ needs.configure.outputs.function_suffix }}
+      s3_bucket: my-lambda-deployments-${{ needs.configure.outputs.function_suffix }}
+      s3_key: my-lambda-${{ github.sha }}.zip
+      runtime: nodejs18.x
+      handler: index.handler
+      environment_variables: '{"NODE_ENV":"${{ needs.configure.outputs.environment }}","DEPLOYMENT_ID":"${{ github.sha }}"}'
+      aws_region: us-east-1
+      timeout: ${{ needs.configure.outputs.timeout }}
+      memory_size: ${{ needs.configure.outputs.memory_size }}
+      environment: ${{ needs.configure.outputs.environment }}
+    secrets:
+      oidc_role_arn: ${{ secrets.LAMBDA_PROD_OIDC_ROLE_ARN }}
+
+  # Deployment summary
+  deployment-summary:
+    needs:
+      [
+        configure,
+        deploy-lambda-dev,
+        deploy-lambda-staging,
+        deploy-lambda-prod,
+        deploy-lambda-s3-example,
+      ]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deployment Summary
+        run: |
+          echo "## 📋 Lambda Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "- **Branch**: ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Target Environment**: ${{ needs.configure.outputs.environment }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Function Suffix**: ${{ needs.configure.outputs.function_suffix }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Runtime**: ${{ needs.configure.outputs.runtime }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Memory**: ${{ needs.configure.outputs.memory_size }} MB" >> $GITHUB_STEP_SUMMARY
+          echo "- **Timeout**: ${{ needs.configure.outputs.timeout }}s" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # Check deployment results
+          if [[ "${{ needs.deploy-lambda-dev.result }}" == "success" ]]; then
+            echo "✅ **Development Deployment**: Successful" >> $GITHUB_STEP_SUMMARY
+          elif [[ "${{ needs.deploy-lambda-dev.result }}" == "failure" ]]; then
+            echo "❌ **Development Deployment**: Failed" >> $GITHUB_STEP_SUMMARY
+          elif [[ "${{ needs.deploy-lambda-dev.result }}" == "skipped" ]]; then
+            echo "⏭️ **Development Deployment**: Skipped" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          if [[ "${{ needs.deploy-lambda-staging.result }}" == "success" ]]; then
+            echo "✅ **Staging Deployment**: Successful" >> $GITHUB_STEP_SUMMARY
+          elif [[ "${{ needs.deploy-lambda-staging.result }}" == "failure" ]]; then
+            echo "❌ **Staging Deployment**: Failed" >> $GITHUB_STEP_SUMMARY
+          elif [[ "${{ needs.deploy-lambda-staging.result }}" == "skipped" ]]; then
+            echo "⏭️ **Staging Deployment**: Skipped" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          if [[ "${{ needs.deploy-lambda-prod.result }}" == "success" ]]; then
+            echo "✅ **Production Deployment**: Successful" >> $GITHUB_STEP_SUMMARY
+          elif [[ "${{ needs.deploy-lambda-prod.result }}" == "failure" ]]; then
+            echo "❌ **Production Deployment**: Failed" >> $GITHUB_STEP_SUMMARY
+          elif [[ "${{ needs.deploy-lambda-prod.result }}" == "skipped" ]]; then
+            echo "⏭️ **Production Deployment**: Skipped" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          if [[ "${{ needs.deploy-lambda-s3-example.result }}" == "success" ]]; then
+            echo "✅ **S3-based Deployment**: Successful" >> $GITHUB_STEP_SUMMARY
+          elif [[ "${{ needs.deploy-lambda-s3-example.result }}" == "failure" ]]; then
+            echo "❌ **S3-based Deployment**: Failed" >> $GITHUB_STEP_SUMMARY
+          elif [[ "${{ needs.deploy-lambda-s3-example.result }}" == "skipped" ]]; then
+            echo "⏭️ **S3-based Deployment**: Skipped" >> $GITHUB_STEP_SUMMARY
+          fi

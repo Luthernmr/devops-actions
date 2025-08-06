@@ -1,0 +1,160 @@
+name: Setup CodeDeploy for ECS Blue-Green
+description: Sets up CodeDeploy application and deployment group for ECS blue-green deployments
+
+inputs:
+  application_name:
+    description: "Name of the CodeDeploy application"
+    required: true
+  deployment_group_name:
+    description: "Name of the deployment group"
+    required: true
+  ecs_cluster_name:
+    description: "Name of the ECS cluster"
+    required: true
+  ecs_service_name:
+    description: "Name of the ECS service"
+    required: true
+  load_balancer_target_group_arn:
+    description: "ARN of the target group for the load balancer"
+    required: true
+  production_listener_arn:
+    description: "ARN of the production listener"
+    required: true
+  test_listener_arn:
+    description: "ARN of the test listener (optional for blue-green)"
+    required: false
+  codedeploy_service_role_arn:
+    description: "ARN of the CodeDeploy service role"
+    required: true
+  aws_region:
+    description: "AWS region"
+    required: true
+  oidc_role_arn:
+    description: "ARN of the AWS IAM role to assume"
+    required: true
+  auto_scaling_groups:
+    description: "Comma-separated list of Auto Scaling group names (if using EC2)"
+    required: false
+  ec2_tag_filters:
+    description: "JSON string of EC2 tag filters (if using EC2)"
+    required: false
+
+runs:
+  using: "composite"
+  steps:
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v3
+      with:
+        role-to-assume: ${{ inputs.oidc_role_arn }}
+        aws-region: ${{ inputs.aws_region }}
+
+    - name: Create CodeDeploy application
+      run: |
+        # Check if application exists
+        if aws deploy get-application --application-name ${{ inputs.application_name }} 2>/dev/null; then
+          echo "CodeDeploy application '${{ inputs.application_name }}' already exists"
+        else
+          echo "Creating CodeDeploy application '${{ inputs.application_name }}'"
+          aws deploy create-application \
+            --application-name ${{ inputs.application_name }} \
+            --compute-platform ECS
+          echo "✅ CodeDeploy application created successfully"
+        fi
+      shell: bash
+
+    - name: Create deployment group configuration
+      run: |
+        cat > deployment-group-config.json << EOF
+        {
+          "applicationName": "${{ inputs.application_name }}",
+          "deploymentGroupName": "${{ inputs.deployment_group_name }}",
+          "serviceRoleArn": "${{ inputs.codedeploy_service_role_arn }}",
+          "deploymentConfigName": "CodeDeployDefault.ECSAllAtOnceBlueGreen",
+          "ecsServices": [
+            {
+              "serviceName": "${{ inputs.ecs_service_name }}",
+              "clusterName": "${{ inputs.ecs_cluster_name }}"
+            }
+          ],
+          "loadBalancerInfo": {
+            "targetGroupInfoList": [
+              {
+                "name": "$(aws elbv2 describe-target-groups --target-group-arns ${{ inputs.load_balancer_target_group_arn }} --query 'TargetGroups[0].TargetGroupName' --output text)"
+              }
+            ]
+          },
+          "blueGreenDeploymentConfiguration": {
+            "terminateBlueInstancesOnDeploymentSuccess": {
+              "action": "TERMINATE",
+              "terminationWaitTimeInMinutes": 5
+            },
+            "deploymentReadyOption": {
+              "actionOnTimeout": "CONTINUE_DEPLOYMENT"
+            },
+            "greenFleetProvisioningOption": {
+              "action": "COPY_AUTO_SCALING_GROUP"
+            }
+          }
+        }
+        EOF
+
+        # Add test listener if provided
+        if [[ -n "${{ inputs.test_listener_arn }}" ]]; then
+          jq '.loadBalancerInfo.targetGroupInfoList[0].testTrafficRoute = {
+            "listenerArns": ["${{ inputs.test_listener_arn }}"]
+          }' deployment-group-config.json > temp.json && mv temp.json deployment-group-config.json
+        fi
+
+        # Add production listener
+        jq '.loadBalancerInfo.targetGroupInfoList[0].prodTrafficRoute = {
+          "listenerArns": ["${{ inputs.production_listener_arn }}"]
+        }' deployment-group-config.json > temp.json && mv temp.json deployment-group-config.json
+
+        echo "Deployment group configuration:"
+        cat deployment-group-config.json | jq .
+      shell: bash
+
+    - name: Create deployment group
+      run: |
+        # Check if deployment group exists
+        if aws deploy get-deployment-group \
+          --application-name ${{ inputs.application_name }} \
+          --deployment-group-name ${{ inputs.deployment_group_name }} 2>/dev/null; then
+          echo "Deployment group '${{ inputs.deployment_group_name }}' already exists, updating..."
+          aws deploy update-deployment-group \
+            --cli-input-json file://deployment-group-config.json
+          echo "✅ Deployment group updated successfully"
+        else
+          echo "Creating deployment group '${{ inputs.deployment_group_name }}'"
+          aws deploy create-deployment-group \
+            --cli-input-json file://deployment-group-config.json
+          echo "✅ Deployment group created successfully"
+        fi
+      shell: bash
+
+    - name: Verify setup
+      run: |
+        echo "## CodeDeploy Setup Verification" >> $GITHUB_STEP_SUMMARY
+
+        # Get application info
+        APP_INFO=$(aws deploy get-application --application-name ${{ inputs.application_name }})
+        echo "- **Application**: ${{ inputs.application_name }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Platform**: $(echo $APP_INFO | jq -r '.application.computePlatform')" >> $GITHUB_STEP_SUMMARY
+
+        # Get deployment group info
+        DG_INFO=$(aws deploy get-deployment-group \
+          --application-name ${{ inputs.application_name }} \
+          --deployment-group-name ${{ inputs.deployment_group_name }})
+        echo "- **Deployment Group**: ${{ inputs.deployment_group_name }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **ECS Service**: ${{ inputs.ecs_service_name }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **ECS Cluster**: ${{ inputs.ecs_cluster_name }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Service Role**: ${{ inputs.codedeploy_service_role_arn }}" >> $GITHUB_STEP_SUMMARY
+
+        echo "✅ CodeDeploy setup completed successfully"
+      shell: bash
+
+    - name: Cleanup
+      if: always()
+      run: |
+        rm -f deployment-group-config.json temp.json
+      shell: bash

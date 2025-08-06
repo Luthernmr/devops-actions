@@ -1,0 +1,98 @@
+name: Test AWS ECS Rollback
+
+on:
+  workflow_dispatch:
+    inputs:
+      rollback_type:
+        description: "Type of rollback to test"
+        required: true
+        default: "manual"
+        type: choice
+        options:
+          - manual
+          - automatic_steps
+          - specific_revision
+      rollback_steps:
+        description: "Number of steps to rollback (for automatic_steps)"
+        required: false
+        default: "1"
+        type: string
+      specific_revision:
+        description: "Specific revision to rollback to (for specific_revision)"
+        required: false
+        type: string
+      environment:
+        description: "Environment to rollback"
+        required: true
+        default: "dev"
+        type: choice
+        options:
+          - dev
+          - staging
+          - prod
+
+jobs:
+  # Test manual rollback (1 step back)
+  test-manual-rollback:
+    if: ${{ inputs.rollback_type == 'manual' }}
+    uses: your-org/devops-actions/aws/workflows/rollback-ecs.yml@main
+    with:
+      cluster_name: my-app-${{ inputs.environment }}-cluster
+      service_name: my-app-${{ inputs.environment }}-service
+      aws_region: us-east-1
+      wait_for_stability: true
+      confirmation_required: false
+      reason: "Manual rollback test initiated from GitHub Actions"
+      environment: ${{ inputs.environment }}
+    secrets:
+      oidc_role_arn: ${{ secrets.ECS_OIDC_ROLE_ARN }}
+
+  # Test rollback with specific number of steps
+  test-automatic-steps-rollback:
+    if: ${{ inputs.rollback_type == 'automatic_steps' }}
+    uses: your-org/devops-actions/aws/workflows/rollback-ecs.yml@main
+    with:
+      cluster_name: my-app-${{ inputs.environment }}-cluster
+      service_name: my-app-${{ inputs.environment }}-service
+      rollback_steps: ${{ fromJson(inputs.rollback_steps) }}
+      aws_region: us-east-1
+      wait_for_stability: true
+      confirmation_required: false
+      reason: "Automated rollback test - ${{ inputs.rollback_steps }} steps back"
+      environment: ${{ inputs.environment }}
+    secrets:
+      oidc_role_arn: ${{ secrets.ECS_OIDC_ROLE_ARN }}
+
+  # Test rollback to specific revision
+  test-specific-revision-rollback:
+    if: ${{ inputs.rollback_type == 'specific_revision' }}
+    uses: your-org/devops-actions/aws/workflows/rollback-ecs.yml@main
+    with:
+      cluster_name: my-app-${{ inputs.environment }}-cluster
+      service_name: my-app-${{ inputs.environment }}-service
+      rollback_to_revision: ${{ inputs.specific_revision }}
+      aws_region: us-east-1
+      wait_for_stability: true
+      confirmation_required: false
+      reason: "Rollback to specific revision: ${{ inputs.specific_revision }}"
+      environment: ${{ inputs.environment }}
+    secrets:
+      oidc_role_arn: ${{ secrets.ECS_OIDC_ROLE_ARN }}
+
+  # Test deployment with auto-rollback enabled
+  test-deployment-with-auto-rollback:
+    uses: your-org/devops-actions/aws/workflows/deploy-ecs.yml@main
+    with:
+      cluster_name: my-app-test-cluster
+      service_name: my-app-test-service
+      task_definition: my-app-test-task-definition
+      image_uri: 123456789012.dkr.ecr.us-east-1.amazonaws.com/my-app:test-auto-rollback
+      container_name: my-app-container
+      aws_region: us-east-1
+      wait_for_stability: true
+      auto_rollback_on_failure: true
+      rollback_timeout: 5
+      health_check_grace_period: 30
+      environment: test
+    secrets:
+      oidc_role_arn: ${{ secrets.ECS_OIDC_ROLE_ARN }}

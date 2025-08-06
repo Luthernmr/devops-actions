@@ -1,0 +1,118 @@
+name: Deploy to AWS Lambda
+description: Deploys a Lambda function from a zip file or source code
+
+inputs:
+  function_name:
+    description: "Name of the Lambda function"
+    required: true
+  zip_file:
+    description: "Path to the zip file containing the Lambda function code"
+    required: false
+  s3_bucket:
+    description: "S3 bucket containing the Lambda function code"
+    required: false
+  s3_key:
+    description: "S3 key of the Lambda function code"
+    required: false
+  source_directory:
+    description: "Directory containing the Lambda function source code (will be zipped)"
+    required: false
+  runtime:
+    description: "Lambda runtime (e.g., python3.9, nodejs18.x)"
+    required: false
+  handler:
+    description: "Lambda function handler"
+    required: false
+  environment_variables:
+    description: "Environment variables as JSON string"
+    required: false
+  aws_region:
+    description: "AWS region where the Lambda function is located"
+    required: true
+  oidc_role_arn:
+    description: "ARN of the AWS IAM role to assume for Lambda deployment"
+    required: true
+  timeout:
+    description: "Function timeout in seconds"
+    required: false
+  memory_size:
+    description: "Function memory size in MB"
+    required: false
+
+runs:
+  using: "composite"
+  steps:
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v3
+      with:
+        role-to-assume: ${{ inputs.oidc_role_arn }}
+        aws-region: ${{ inputs.aws_region }}
+
+    - name: Prepare deployment package
+      run: |
+        if [[ -n "${{ inputs.zip_file }}" ]]; then
+          echo "Using provided zip file: ${{ inputs.zip_file }}"
+          DEPLOYMENT_PACKAGE="${{ inputs.zip_file }}"
+        elif [[ -n "${{ inputs.source_directory }}" ]]; then
+          echo "Creating zip from source directory: ${{ inputs.source_directory }}"
+          cd "${{ inputs.source_directory }}"
+          zip -r ../lambda-deployment.zip .
+          cd ..
+          DEPLOYMENT_PACKAGE="lambda-deployment.zip"
+        else
+          echo "Creating zip from current directory"
+          zip -r lambda-deployment.zip . -x "*.git*" "*.github*" "*node_modules*" "*__pycache__*"
+          DEPLOYMENT_PACKAGE="lambda-deployment.zip"
+        fi
+        echo "DEPLOYMENT_PACKAGE=${DEPLOYMENT_PACKAGE}" >> $GITHUB_ENV
+      shell: bash
+
+    - name: Deploy from local file
+      if: ${{ inputs.s3_bucket == '' }}
+      run: |
+        aws lambda update-function-code \
+          --function-name ${{ inputs.function_name }} \
+          --zip-file fileb://${DEPLOYMENT_PACKAGE}
+      shell: bash
+
+    - name: Deploy from S3
+      if: ${{ inputs.s3_bucket != '' }}
+      run: |
+        aws lambda update-function-code \
+          --function-name ${{ inputs.function_name }} \
+          --s3-bucket ${{ inputs.s3_bucket }} \
+          --s3-key ${{ inputs.s3_key }}
+      shell: bash
+
+    - name: Update function configuration
+      run: |
+        UPDATE_ARGS=""
+
+        if [[ -n "${{ inputs.runtime }}" ]]; then
+          UPDATE_ARGS="$UPDATE_ARGS --runtime ${{ inputs.runtime }}"
+        fi
+
+        if [[ -n "${{ inputs.handler }}" ]]; then
+          UPDATE_ARGS="$UPDATE_ARGS --handler ${{ inputs.handler }}"
+        fi
+
+        if [[ -n "${{ inputs.timeout }}" ]]; then
+          UPDATE_ARGS="$UPDATE_ARGS --timeout ${{ inputs.timeout }}"
+        fi
+
+        if [[ -n "${{ inputs.memory_size }}" ]]; then
+          UPDATE_ARGS="$UPDATE_ARGS --memory-size ${{ inputs.memory_size }}"
+        fi
+
+        if [[ -n "${{ inputs.environment_variables }}" ]]; then
+          UPDATE_ARGS="$UPDATE_ARGS --environment Variables='${{ inputs.environment_variables }}'"
+        fi
+
+        if [[ -n "$UPDATE_ARGS" ]]; then
+          aws lambda update-function-configuration \
+            --function-name ${{ inputs.function_name }} \
+            $UPDATE_ARGS
+        else
+          echo "No configuration updates specified"
+        fi
+      shell: bash

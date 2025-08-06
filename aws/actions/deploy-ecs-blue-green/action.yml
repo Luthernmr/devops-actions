@@ -1,0 +1,202 @@
+name: Deploy to AWS ECS Blue-Green
+description: Deploys a Docker image to AWS ECS using blue-green deployment strategy via CodeDeploy
+
+inputs:
+  cluster_name:
+    description: "Name of the ECS cluster"
+    required: true
+  service_name:
+    description: "Name of the ECS service"
+    required: true
+  task_definition:
+    description: "Path to the ECS task definition file or task definition family name"
+    required: true
+  image_uri:
+    description: "URI of the Docker image to deploy"
+    required: true
+  container_name:
+    description: "Name of the container in the task definition to update"
+    required: true
+  aws_region:
+    description: "AWS region where the ECS resources are located"
+    required: true
+  oidc_role_arn:
+    description: "ARN of the AWS IAM role to assume for ECS deployment"
+    required: true
+  codedeploy_application_name:
+    description: "Name of the CodeDeploy application"
+    required: true
+  codedeploy_deployment_group:
+    description: "Name of the CodeDeploy deployment group"
+    required: true
+  codedeploy_config_name:
+    description: "CodeDeploy configuration name for blue-green deployment"
+    required: false
+    default: "CodeDeployDefault.ECSAllAtOnceBlueGreen"
+  wait_for_deployment:
+    description: "Whether to wait for the deployment to complete"
+    required: false
+    default: "true"
+  deployment_timeout:
+    description: "Timeout for deployment in minutes"
+    required: false
+    default: "30"
+  auto_rollback_enabled:
+    description: "Enable automatic rollback on deployment failure"
+    required: false
+    default: "true"
+  termination_wait_time:
+    description: "Wait time before terminating original task set (in minutes)"
+    required: false
+    default: "5"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v3
+      with:
+        role-to-assume: ${{ inputs.oidc_role_arn }}
+        aws-region: ${{ inputs.aws_region }}
+
+    - name: Download task definition
+      run: |
+        if [[ -f "${{ inputs.task_definition }}" ]]; then
+          echo "Using task definition file: ${{ inputs.task_definition }}"
+          cp "${{ inputs.task_definition }}" task-definition.json
+        else
+          echo "Downloading task definition for family: ${{ inputs.task_definition }}"
+          aws ecs describe-task-definition \
+            --task-definition ${{ inputs.task_definition }} \
+            --query taskDefinition > task-definition.json
+        fi
+      shell: bash
+
+    - name: Update task definition
+      id: task-def
+      uses: aws-actions/amazon-ecs-render-task-definition@v1
+      with:
+        task-definition: task-definition.json
+        container-name: ${{ inputs.container_name }}
+        image: ${{ inputs.image_uri }}
+
+    - name: Register new task definition
+      id: register-task-def
+      run: |
+        TASK_DEF_ARN=$(aws ecs register-task-definition \
+          --cli-input-json file://${{ steps.task-def.outputs.task-definition }} \
+          --query 'taskDefinition.taskDefinitionArn' \
+          --output text)
+        echo "task-definition-arn=${TASK_DEF_ARN}" >> $GITHUB_OUTPUT
+        echo "New task definition registered: ${TASK_DEF_ARN}"
+      shell: bash
+
+    - name: Create AppSpec file for CodeDeploy
+      run: |
+        cat > appspec.yaml << EOF
+        version: 0.0
+        Resources:
+          - TargetService:
+              Type: AWS::ECS::Service
+              Properties:
+                TaskDefinition: "${{ steps.register-task-def.outputs.task-definition-arn }}"
+                LoadBalancerInfo:
+                  ContainerName: "${{ inputs.container_name }}"
+                  ContainerPort: 80
+                PlatformVersion: "LATEST"
+        Hooks:
+          - BeforeInstall: "LambdaFunctionToValidateBeforeInstall"
+          - AfterInstall: "LambdaFunctionToValidateAfterTrafficShift"
+          - AfterAllowTestTraffic: "LambdaFunctionToValidateAfterTestTrafficStarts"
+          - BeforeAllowTraffic: "LambdaFunctionToValidateBeforeAllowingProductionTraffic"
+          - AfterAllowTraffic: "LambdaFunctionToValidateAfterAllowingProductionTraffic"
+        EOF
+        echo "AppSpec file created:"
+        cat appspec.yaml
+      shell: bash
+
+    - name: Create deployment revision
+      id: create-revision
+      run: |
+        # Create a deployment bundle
+        zip -r deployment-bundle.zip appspec.yaml
+
+        # Upload to S3 (assuming a deployment bucket exists)
+        BUCKET_NAME="codedeploy-deployments-${{ inputs.aws_region }}-$(aws sts get-caller-identity --query Account --output text)"
+        aws s3 mb s3://${BUCKET_NAME} --region ${{ inputs.aws_region }} || true
+
+        REVISION_KEY="ecs-deployments/${{ inputs.service_name }}/$(date +%s)-deployment-bundle.zip"
+        aws s3 cp deployment-bundle.zip s3://${BUCKET_NAME}/${REVISION_KEY}
+
+        echo "bucket-name=${BUCKET_NAME}" >> $GITHUB_OUTPUT
+        echo "revision-key=${REVISION_KEY}" >> $GITHUB_OUTPUT
+        echo "Deployment bundle uploaded to s3://${BUCKET_NAME}/${REVISION_KEY}"
+      shell: bash
+
+    - name: Create CodeDeploy deployment
+      id: create-deployment
+      run: |
+        DEPLOYMENT_ID=$(aws deploy create-deployment \
+          --application-name ${{ inputs.codedeploy_application_name }} \
+          --deployment-group-name ${{ inputs.codedeploy_deployment_group }} \
+          --deployment-config-name ${{ inputs.codedeploy_config_name }} \
+          --revision revisionType=S3,s3Location='{bucket=${{ steps.create-revision.outputs.bucket-name }},key=${{ steps.create-revision.outputs.revision-key }},bundleType=zip}' \
+          --auto-rollback-configuration enabled=${{ inputs.auto_rollback_enabled }},events=DEPLOYMENT_FAILURE,DEPLOYMENT_STOP_ON_ALARM,DEPLOYMENT_STOP_ON_INSTANCE_FAILURE \
+          --query 'deploymentId' \
+          --output text)
+          
+        echo "deployment-id=${DEPLOYMENT_ID}" >> $GITHUB_OUTPUT
+        echo "CodeDeploy deployment created: ${DEPLOYMENT_ID}"
+        echo "## Blue-Green Deployment Started" >> $GITHUB_STEP_SUMMARY
+        echo "- **Deployment ID**: ${DEPLOYMENT_ID}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Application**: ${{ inputs.codedeploy_application_name }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Deployment Group**: ${{ inputs.codedeploy_deployment_group }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Configuration**: ${{ inputs.codedeploy_config_name }}" >> $GITHUB_STEP_SUMMARY
+      shell: bash
+
+    - name: Wait for deployment completion
+      if: ${{ inputs.wait_for_deployment == 'true' }}
+      run: |
+        echo "Waiting for deployment ${{ steps.create-deployment.outputs.deployment-id }} to complete..."
+        echo "Timeout: ${{ inputs.deployment_timeout }} minutes"
+
+        aws deploy wait deployment-successful \
+          --deployment-id ${{ steps.create-deployment.outputs.deployment-id }} \
+          --cli-read-timeout ${{ inputs.deployment_timeout }}0 \
+          --cli-connect-timeout 60
+          
+        DEPLOYMENT_STATUS=$(aws deploy get-deployment \
+          --deployment-id ${{ steps.create-deployment.outputs.deployment-id }} \
+          --query 'deploymentInfo.status' \
+          --output text)
+          
+        echo "Deployment completed with status: ${DEPLOYMENT_STATUS}"
+
+        if [[ "${DEPLOYMENT_STATUS}" == "Succeeded" ]]; then
+          echo "## ✅ Blue-Green Deployment Successful" >> $GITHUB_STEP_SUMMARY
+          echo "The deployment has completed successfully!" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "## ❌ Blue-Green Deployment Failed" >> $GITHUB_STEP_SUMMARY
+          echo "Deployment status: ${DEPLOYMENT_STATUS}" >> $GITHUB_STEP_SUMMARY
+          exit 1
+        fi
+      shell: bash
+
+    - name: Get deployment info
+      if: ${{ inputs.wait_for_deployment == 'false' }}
+      run: |
+        echo "## 🔄 Blue-Green Deployment In Progress" >> $GITHUB_STEP_SUMMARY
+        echo "- **Deployment ID**: ${{ steps.create-deployment.outputs.deployment-id }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Monitor progress**: AWS Console > CodeDeploy > Deployments" >> $GITHUB_STEP_SUMMARY
+        echo "- **Command to check status**:" >> $GITHUB_STEP_SUMMARY
+        echo '```bash' >> $GITHUB_STEP_SUMMARY
+        echo "aws deploy get-deployment --deployment-id ${{ steps.create-deployment.outputs.deployment-id }}" >> $GITHUB_STEP_SUMMARY
+        echo '```' >> $GITHUB_STEP_SUMMARY
+      shell: bash
+
+    - name: Cleanup
+      if: always()
+      run: |
+        # Clean up temporary files
+        rm -f task-definition.json appspec.yaml deployment-bundle.zip
+      shell: bash
