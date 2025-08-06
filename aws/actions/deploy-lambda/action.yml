@@ -70,6 +70,7 @@ runs:
       uses: aws-actions/configure-aws-credentials@v3
       with:
         role-to-assume: ${{ inputs.oidc_role_arn }}
+        role-session-name: cicd-role-session-name
         aws-region: ${{ inputs.aws_region }}
 
     - name: Set up Python
