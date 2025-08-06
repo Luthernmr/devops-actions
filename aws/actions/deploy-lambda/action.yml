@@ -52,13 +52,13 @@ inputs:
     required: false
     default: "true"
   deployment_timeout:
-    description: "Maximum time in seconds to wait for deployment (default: 300)"
+    description: "Maximum time in seconds to wait for deployment (default: 120)"
     required: false
-    default: "300"
+    default: "120"
   package_timeout:
-    description: "Maximum time in seconds to wait for package preparation (default: 180)"
+    description: "Maximum time in seconds to wait for package preparation (default: 90)"
     required: false
-    default: "180"
+    default: "90"
 
 runs:
   using: "composite"

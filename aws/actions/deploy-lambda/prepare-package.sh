@@ -47,7 +47,7 @@ install_python_deps() {
     echo "This may take a while depending on the number of dependencies..."
     
     # Install with timeout and progress
-    timeout 120 pip install -r "$req_path" --target "$target_dir" --no-deps --upgrade --quiet || {
+    timeout 60 pip install -r "$req_path" --target "$target_dir" --no-deps --upgrade --quiet || {
       echo "❌ Dependency installation failed or timed out"
       cleanup error
     }
