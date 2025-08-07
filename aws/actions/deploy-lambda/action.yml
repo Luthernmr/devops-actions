@@ -27,7 +27,7 @@ inputs:
   handler:
     description: "Lambda function handler"
     required: false
-    default: "main.handler"
+    default: "main.lambda_handler"
   aws_region:
     description: "AWS region where the Lambda function is located"
     required: false
