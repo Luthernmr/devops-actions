@@ -59,6 +59,10 @@ inputs:
     description: "Maximum time in seconds to wait for package preparation (default: 90)"
     required: false
     default: "90"
+  update_configuration:
+    description: "Whether to update function configuration (runtime, handler, timeout, memory)"
+    required: false
+    default: "true"
 
 runs:
   using: "composite"
@@ -110,6 +114,7 @@ runs:
       shell: bash
 
     - name: Update function configuration
+      if: ${{ inputs.update_configuration == 'true' }}
       run: |
         ${{ github.action_path }}/update-config.sh \
           "${{ inputs.function_name }}" \
